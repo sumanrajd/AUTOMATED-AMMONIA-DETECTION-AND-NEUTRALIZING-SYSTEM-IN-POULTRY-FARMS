@@ -1,0 +1,130 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <DHT.h>
+#include <WiFi.h>
+#include <ThingSpeak.h>
+
+// ===== WIFI =====
+const char* ssid = "project";
+const char* password = "12345678";
+
+// ===== THINGSPEAK =====
+unsigned long channelID = 3275816;
+const char* writeAPIKey = "M7T6TW8T4ITKMMGL";
+
+WiFiClient client;
+
+// ===== LCD =====
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// ===== DHT =====
+#define DHTPIN 4
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// ===== GAS SENSOR =====
+#define GAS_PIN 34
+int gasMin = 0;
+int gasMax = 4095;
+
+// ===== ALERT OUTPUT =====
+#define ALERT_PIN 26   // buzzer / LED / relay
+
+void setup() {
+  Serial.begin(115200);
+
+  lcd.init();
+  lcd.backlight();
+  dht.begin();
+
+  pinMode(ALERT_PIN, OUTPUT);
+  digitalWrite(ALERT_PIN, LOW);
+
+  // ===== WIFI CONNECT =====
+  lcd.print("Connecting WiFi");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  lcd.clear();
+  lcd.print("WiFi Connected");
+  delay(1500);
+
+  ThingSpeak.begin(client);
+}
+
+void loop() {
+
+  float humidity = dht.readHumidity();
+  float temperature = dht.readTemperature();
+  int gasValue = analogRead(GAS_PIN);
+
+  // Convert gas to %
+  int gasPercent = map(gasValue, gasMin, gasMax, 0, 100);
+  gasPercent = constrain(gasPercent, 0, 100);
+
+  if (isnan(humidity) || isnan(temperature)) {
+    lcd.clear();
+    lcd.print("Sensor Error");
+    return;
+  }
+
+  // ===== GAS ALERT + LCD MESSAGE =====
+  String gasStatus = "";
+
+  if (gasPercent <= 35) {
+    digitalWrite(ALERT_PIN, LOW);
+    gasStatus = "AM:" + String(gasPercent) + "%";
+  }
+  else if (gasPercent > 35 && gasPercent <= 50) {
+    // Normal → slow beep
+    digitalWrite(ALERT_PIN, HIGH);
+    delay(100);
+    digitalWrite(ALERT_PIN, LOW);
+    delay(1000);
+    gasStatus = "AMMONIA NORMAL";
+  }
+  else if (gasPercent > 50 && gasPercent <= 75) {
+    // Medium → fast beep
+    digitalWrite(ALERT_PIN, HIGH);
+    delay(300);
+    digitalWrite(ALERT_PIN, LOW);
+    delay(500);
+    gasStatus = "AMMONIA MEDIUM";
+  }
+  else {
+    // High → continuous ON
+    digitalWrite(ALERT_PIN, HIGH);
+    gasStatus = "AMMONIA HIGH";
+  }
+
+  // ===== LCD DISPLAY =====
+  lcd.clear();
+
+  lcd.setCursor(0,0);
+  lcd.print("T:");
+  lcd.print(temperature);
+  lcd.print(" H:");
+  lcd.print(humidity);
+
+  lcd.setCursor(0,1);
+  lcd.print(gasStatus);
+
+  // ===== SEND TO THINGSPEAK =====
+  ThingSpeak.setField(1, temperature);
+  ThingSpeak.setField(2, humidity);
+  ThingSpeak.setField(3, gasPercent);
+
+  int status = ThingSpeak.writeFields(channelID, writeAPIKey);
+
+  if(status == 200){
+    Serial.println("Data sent");
+  } else {
+    Serial.println("Upload Failed");
+  }
+
+  delay(1500); // ThingSpeak minimum 15 seconds
+}
